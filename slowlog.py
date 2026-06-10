@@ -77,6 +77,8 @@ class SlowLogCollector:
                 "client_name": entry.get("client_name", ""),
             }
             results.append(record)
+        # SLOWLOG GET 默认返回最新在前，按 id 正序排列
+        results.sort(key=lambda r: r["id"])
         return results
 
     def reset(self) -> bool:
