@@ -1,14 +1,32 @@
 """配置加载模块"""
 
 import logging
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml
 
 logger = logging.getLogger(__name__)
 
+# 全局时区对象，由 load_config 初始化
+_tz = ZoneInfo("UTC")
+
+
+def get_tz() -> ZoneInfo:
+    """获取当前配置的时区"""
+    return _tz
+
+
+def now_str() -> str:
+    """返回当前配置时区的时间字符串，如 2026-06-10T11:57:04.680+08:00"""
+    dt = datetime.now(_tz)
+    # isoformat 输出到微秒，截取到毫秒
+    return dt.isoformat(timespec="milliseconds")
+
 # 默认配置
 DEFAULTS = {
+    "timezone": "UTC",
     "redis": {
         "host": "127.0.0.1",
         "port": 6379,
@@ -83,6 +101,17 @@ def load_config(path: str) -> dict[str, Any]:
     _validate(config)
 
     logger.info("配置加载成功: %s", path)
+
+    # 初始化时区
+    global _tz
+    tz_name = config.get("timezone", "UTC")
+    try:
+        _tz = ZoneInfo(tz_name)
+        logger.info("时区: %s", tz_name)
+    except Exception:
+        logger.warning("时区 '%s' 无效，回退到 UTC", tz_name)
+        _tz = ZoneInfo("UTC")
+
     return config
 
 

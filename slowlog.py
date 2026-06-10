@@ -1,10 +1,11 @@
 """Redis 慢日志采集模块"""
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 import redis
+from config import get_tz, now_str
 
 logger = logging.getLogger(__name__)
 
@@ -78,15 +79,15 @@ class SlowLogCollector:
                 continue
 
             record = {
-                "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                "time": now_str(),
                 "type": "slowlog",
                 "addr": self.addr,
                 "id": entry_id,
                 "cmd": cmd,
                 "duration_us": duration_us,
                 "duration_ms": duration_ms,
-                "start_time": datetime.fromtimestamp(start_time, tz=timezone.utc).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ") if start_time else "unknown",
+                "start_time": datetime.fromtimestamp(start_time, tz=get_tz()).strftime(
+                    "%Y-%m-%dT%H:%M:%S") if start_time else "unknown",
                 "client_address": entry.get("client_address", "unknown"),
                 "client_name": entry.get("client_name", ""),
             }

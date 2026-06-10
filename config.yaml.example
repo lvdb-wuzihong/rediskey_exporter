@@ -1,5 +1,8 @@
 # Redis Key Analyzer 配置文件
 
+# 时区设置（输出日志的时间时区）
+timezone: "Asia/Shanghai"   # 可选: "UTC", "Asia/Shanghai" 等标准时区名称
+
 redis:
   host: "127.0.0.1"
   port: 6379

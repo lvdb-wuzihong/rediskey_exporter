@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import redis
+from config import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,7 @@ class BigKeyCollector:
         ttl = self._client.ttl(key)
 
         return {
-            "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "time": now_str(),
             "type": "bigkey",
             "addr": self.addr,
             "key": key,

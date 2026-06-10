@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import redis
+from config import now_str
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ class HotKeyCollector:
             # 获取key的详细信息
             detail = self._get_key_detail(key)
             record = {
-                "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                "time": now_str(),
                 "type": "hotkey",
                 "addr": self.addr,
                 "key": key,
@@ -171,7 +172,7 @@ class HotKeyCollector:
         for key, freq in freq_list[:top_n]:
             detail = self._get_key_detail(key)
             record = {
-                "time": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                "time": now_str(),
                 "type": "hotkey",
                 "addr": self.addr,
                 "key": key,
