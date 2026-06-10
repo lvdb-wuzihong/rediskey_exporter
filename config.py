@@ -39,9 +39,9 @@ DEFAULTS = {
     },
     "output": {
         "log_dir": "./logs",
-        "slowlog_file": "slowlog.json",
-        "bigkey_file": "bigkey.json",
-        "hotkey_file": "hotkey.json",
+        "slow_query_file": "slow_query.log",
+        "bigkey_file": "bigkey.log",
+        "hotkey_file": "hotkey.log",
     },
 }
 
