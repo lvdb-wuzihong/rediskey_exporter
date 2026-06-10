@@ -18,17 +18,28 @@ logging.basicConfig(
 logger = logging.getLogger("redis_analyzer")
 
 
+def _sanitize(obj):
+    """将 dict 中的 bytes 递归转换为 str"""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    return obj
+
+
 def output_records(records: list[dict], output_file: str | None = None):
     """输出记录到终端或文件"""
     if output_file:
         mode = "a" if os.path.exists(output_file) else "w"
         with open(output_file, mode, encoding="utf-8") as f:
             for record in records:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                f.write(json.dumps(_sanitize(record), ensure_ascii=False) + "\n")
         logger.info("已写入 %d 条记录到 %s", len(records), output_file)
     else:
         for record in records:
-            print(json.dumps(record, ensure_ascii=False))
+            print(json.dumps(_sanitize(record), ensure_ascii=False))
 
 
 def cmd_slowlog(args):
