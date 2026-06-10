@@ -59,7 +59,6 @@ def _slowlog_worker(config: dict, output_path: str):
     interval = slowlog_cfg["interval"]
     count = slowlog_cfg["count"]
     min_duration_ms = slowlog_cfg["min_duration_ms"]
-    reset_after = slowlog_cfg["reset_after_collect"]
 
     collector = SlowLogCollector(
         host=redis_cfg["host"], port=redis_cfg["port"],
@@ -79,22 +78,17 @@ def _slowlog_worker(config: dict, output_path: str):
     logger.info("[slowlog] 启动，间隔=%ds, 过滤阈值=%.1fms", interval, min_duration_ms)
 
     while not _shutdown_event.is_set():
-        _shutdown_event.wait(interval)
-        if _shutdown_event.is_set():
-            break
-
         try:
             records = collector.collect(count=count, min_duration_ms=min_duration_ms)
             if records:
                 logger.info("[slowlog] 采集到 %d 条慢日志", len(records))
                 _append_json(output_path, records)
             else:
-                logger.debug("[slowlog] 无新增慢日志")
-
-            if reset_after:
-                collector.reset()
+                logger.info("[slowlog] 无新增慢日志")
         except Exception as e:
             logger.error("[slowlog] 采集异常: %s", e)
+
+        _shutdown_event.wait(interval)
 
     collector.close()
     logger.info("[slowlog] 已停止")
@@ -115,10 +109,6 @@ def _bigkey_worker(config: dict, output_path: str):
     logger.info("[bigkey] 启动，间隔=%ds, 阈值=%d bytes", interval, bigkey_cfg["threshold_bytes"])
 
     while not _shutdown_event.is_set():
-        _shutdown_event.wait(interval)
-        if _shutdown_event.is_set():
-            break
-
         try:
             start = time.time()
             logger.info("[bigkey] 开始扫描...")
@@ -136,6 +126,8 @@ def _bigkey_worker(config: dict, output_path: str):
                 logger.info("[bigkey] 未发现大Key，扫描耗时 %.1fs", elapsed)
         except Exception as e:
             logger.error("[bigkey] 扫描异常: %s", e)
+
+        _shutdown_event.wait(interval)
 
     collector.close()
     logger.info("[bigkey] 已停止")
@@ -166,10 +158,6 @@ def _hotkey_worker(config: dict, output_path: str):
     logger.info("[hotkey] 启动，间隔=%ds, 方式=%s", interval, method)
 
     while not _shutdown_event.is_set():
-        _shutdown_event.wait(interval)
-        if _shutdown_event.is_set():
-            break
-
         try:
             if method == "freq":
                 records = collector.collect_by_object_freq(top_n=hotkey_cfg["top_n"])
@@ -183,9 +171,11 @@ def _hotkey_worker(config: dict, output_path: str):
                 logger.info("[hotkey] 发现 %d 个热Key", len(records))
                 _append_json(output_path, records)
             else:
-                logger.debug("[hotkey] 未发现热Key")
+                logger.info("[hotkey] 未发现热Key")
         except Exception as e:
             logger.error("[hotkey] 探测异常: %s", e)
+
+        _shutdown_event.wait(interval)
 
     collector.close()
     logger.info("[hotkey] 已停止")

@@ -21,7 +21,6 @@ DEFAULTS = {
         "interval": 60,
         "count": 128,
         "min_duration_ms": 0,
-        "reset_after_collect": False,
     },
     "bigkey": {
         "enabled": True,

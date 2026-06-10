@@ -13,7 +13,6 @@ slowlog:
   interval: 60              # 采集间隔（秒）
   count: 128                # 每次拉取条数
   min_duration_ms: 100      # 自定义过滤阈值（毫秒），低于此值的不记录
-  reset_after_collect: true # 采集后是否重置慢日志
 
 # 大Key扫描
 bigkey:
