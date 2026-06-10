@@ -46,6 +46,7 @@ DEFAULTS = {
         "threshold_bytes": 10 * 1024 * 1024,
         "scan_count": 1000,
         "max_keys": 0,
+        "scan_interval": 0,
     },
     "hotkey": {
         "enabled": True,

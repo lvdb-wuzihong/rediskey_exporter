@@ -24,6 +24,7 @@ bigkey:
   threshold_bytes: 1048576  # 大Key阈值（字节），默认1MB
   scan_count: 1000          # 每次SCAN的count
   max_keys: 0               # 最多扫描key数，0=不限制
+  scan_interval: 0.1         # 每批 SCAN 间隔(秒)，降低对Redis的影响
 
 # 热Key探测
 hotkey:

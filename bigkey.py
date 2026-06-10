@@ -4,6 +4,7 @@
 """
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -36,7 +37,8 @@ class BigKeyCollector:
         return {"dbsize": dbsize, "keyspace": info}
 
     def collect(self, threshold_bytes: int = DEFAULT_BIGKEY_THRESHOLD,
-                scan_count: int = 1000, max_keys: int = 0) -> list[dict]:
+                scan_count: int = 1000, max_keys: int = 0,
+                scan_interval: float = 0) -> list[dict]:
         """
         扫描并采集大Key
 
@@ -44,6 +46,7 @@ class BigKeyCollector:
             threshold_bytes: 大Key阈值（字节），超过此值的key会被记录
             scan_count: 每次SCAN的count参数
             max_keys: 最多扫描的key数量，0表示不限制
+            scan_interval: 每批 SCAN 之间的间隔（秒），降低对 Redis 的影响
 
         Returns:
             大Key记录列表
@@ -73,6 +76,10 @@ class BigKeyCollector:
 
             if cursor == 0 or (max_keys > 0 and scanned >= max_keys):
                 break
+
+            # 每批 SCAN 间隔，降低 Redis 负载
+            if scan_interval > 0:
+                time.sleep(scan_interval)
 
         logger.info("扫描完成: 共扫描 %d 个key, 发现 %d 个大Key", scanned, len(big_keys))
         return big_keys

@@ -116,6 +116,7 @@ def _bigkey_worker(config: dict, output_path: str):
                 threshold_bytes=bigkey_cfg["threshold_bytes"],
                 scan_count=bigkey_cfg["scan_count"],
                 max_keys=bigkey_cfg["max_keys"],
+                scan_interval=bigkey_cfg.get("scan_interval", 0),
             )
             elapsed = round(time.time() - start, 2)
 
