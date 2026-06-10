@@ -1,0 +1,39 @@
+# Redis Key Analyzer 配置文件
+
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  password: "1234567"
+  db: 0
+  socket_timeout: 10
+
+# 慢日志采集
+slowlog:
+  enabled: true
+  interval: 60              # 采集间隔（秒）
+  count: 128                # 每次拉取条数
+  min_duration_ms: 100      # 自定义过滤阈值（毫秒），低于此值的不记录
+  reset_after_collect: true # 采集后是否重置慢日志
+
+# 大Key扫描
+bigkey:
+  enabled: true
+  interval: 600             # 采集间隔（秒），大Key扫描开销大，间隔设长些
+  threshold_bytes: 1048576  # 大Key阈值（字节），默认1MB
+  scan_count: 1000          # 每次SCAN的count
+  max_keys: 0               # 最多扫描key数，0=不限制
+
+# 热Key探测
+hotkey:
+  enabled: true
+  interval: 120             # 采集间隔（秒）
+  method: "auto"            # auto / monitor / freq
+  sample_seconds: 5         # MONITOR采样时长（秒）
+  top_n: 10                 # 返回前N个热Key
+
+# 日志输出
+output:
+  log_dir: "./logs"                # 日志目录
+  slowlog_file: "slow_query.log"     # 慢日志文件名
+  bigkey_file: "bigkey.log"       # 大Key文件名
+  hotkey_file: "hotkey.log"       # 热Key文件名

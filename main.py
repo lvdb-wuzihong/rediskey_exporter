@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
-"""Redis Key Analyzer - Redis 诊断工具（慢日志 / 大Key / 热Key）"""
+"""Redis Key Analyzer - Redis 诊断守护进程
+
+常驻采集模式：读取配置文件，周期执行慢日志/大Key/热Key采集，输出JSON日志文件。
+"""
 
 import argparse
 import json
-import sys
 import os
+import signal
+import sys
 import logging
+import threading
+import time
 
+from config import load_config
 from slowlog import SlowLogCollector
-from bigkey import BigKeyCollector, DEFAULT_BIGKEY_THRESHOLD
-from hotkey import HotKeyCollector, DEFAULT_SAMPLE_SECONDS
+from bigkey import BigKeyCollector
+from hotkey import HotKeyCollector
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 logger = logging.getLogger("redis_analyzer")
+
+# 全局退出事件
+_shutdown_event = threading.Event()
 
 
 def _sanitize(obj):
@@ -29,159 +39,241 @@ def _sanitize(obj):
     return obj
 
 
-def output_records(records: list[dict], output_file: str | None = None):
-    """输出记录到终端或文件"""
-    if output_file:
-        mode = "a" if os.path.exists(output_file) else "w"
-        with open(output_file, mode, encoding="utf-8") as f:
-            for record in records:
-                f.write(json.dumps(_sanitize(record), ensure_ascii=False) + "\n")
-        logger.info("已写入 %d 条记录到 %s", len(records), output_file)
-    else:
+def _append_json(filepath: str, records: list[dict]):
+    """追加写入行式 JSON 到文件"""
+    if not records:
+        return
+    os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+    with open(filepath, "a", encoding="utf-8") as f:
         for record in records:
-            print(json.dumps(_sanitize(record), ensure_ascii=False))
+            f.write(json.dumps(_sanitize(record), ensure_ascii=False) + "\n")
+    logger.info("写入 %d 条记录到 %s", len(records), filepath)
 
 
-def cmd_slowlog(args):
-    """慢日志采集子命令"""
+# ─── 采集线程 ─────────────────────────────────────────────
+
+def _slowlog_worker(config: dict, output_path: str):
+    """慢日志周期采集线程"""
+    redis_cfg = config["redis"]
+    slowlog_cfg = config["slowlog"]
+    interval = slowlog_cfg["interval"]
+    count = slowlog_cfg["count"]
+    min_duration_ms = slowlog_cfg["min_duration_ms"]
+    reset_after = slowlog_cfg["reset_after_collect"]
+
     collector = SlowLogCollector(
-        host=args.host, port=args.port, password=args.password, db=args.db
+        host=redis_cfg["host"], port=redis_cfg["port"],
+        password=redis_cfg["password"], db=redis_cfg["db"],
+        socket_timeout=redis_cfg["socket_timeout"],
     )
+
+    # 首次运行：记录当前最大 id 作为游标，避免历史数据全量输出
     try:
-        config = collector.get_slowlog_config()
-        total = collector.get_slowlog_len()
-        logger.info(
-            "Redis %s 慢日志配置: slowlog-log-slower-than=%s, slowlog-max-len=%s, 当前记录数=%d",
-            f"{args.host}:{args.port}",
-            config["slowlog_log_slower_than"],
-            config["slowlog_max_len"],
-            total,
-        )
+        raw = collector._client.slowlog_get(1)
+        if raw:
+            collector._last_id = raw[0].get("id", -1)
+            logger.info("[slowlog] 初始化游标 id=%d，跳过已有记录", collector._last_id)
+    except Exception as e:
+        logger.warning("[slowlog] 初始化游标失败: %s", e)
 
-        if total == 0:
-            logger.info("当前无慢日志记录")
-            return
+    logger.info("[slowlog] 启动，间隔=%ds, 过滤阈值=%.1fms", interval, min_duration_ms)
 
-        count = min(args.count, total)
-        records = collector.collect(count=count)
-        logger.info("采集到 %d 条慢日志", len(records))
-        output_records(records, args.output)
+    while not _shutdown_event.is_set():
+        _shutdown_event.wait(interval)
+        if _shutdown_event.is_set():
+            break
 
-        if args.reset:
-            if collector.reset():
-                logger.info("慢日志已重置清空")
+        try:
+            records = collector.collect(count=count, min_duration_ms=min_duration_ms)
+            if records:
+                logger.info("[slowlog] 采集到 %d 条慢日志", len(records))
+                _append_json(output_path, records)
             else:
-                logger.error("慢日志重置失败")
-    finally:
-        collector.close()
+                logger.debug("[slowlog] 无新增慢日志")
+
+            if reset_after:
+                collector.reset()
+        except Exception as e:
+            logger.error("[slowlog] 采集异常: %s", e)
+
+    collector.close()
+    logger.info("[slowlog] 已停止")
 
 
-def cmd_bigkey(args):
-    """大Key采集子命令"""
+def _bigkey_worker(config: dict, output_path: str):
+    """大Key周期扫描线程"""
+    redis_cfg = config["redis"]
+    bigkey_cfg = config["bigkey"]
+    interval = bigkey_cfg["interval"]
+
     collector = BigKeyCollector(
-        host=args.host, port=args.port, password=args.password, db=args.db
+        host=redis_cfg["host"], port=redis_cfg["port"],
+        password=redis_cfg["password"], db=redis_cfg["db"],
+        socket_timeout=redis_cfg["socket_timeout"],
     )
-    try:
-        info = collector.get_info()
-        logger.info("Redis %s 总key数: %d", f"{args.host}:{args.port}", info["dbsize"])
 
-        records = collector.collect(
-            threshold_bytes=args.threshold,
-            scan_count=args.scan_count,
-            max_keys=args.max_keys,
-        )
+    logger.info("[bigkey] 启动，间隔=%ds, 阈值=%d bytes", interval, bigkey_cfg["threshold_bytes"])
 
-        if not records:
-            logger.info("未发现大Key (阈值: %d bytes)", args.threshold)
-            return
+    while not _shutdown_event.is_set():
+        _shutdown_event.wait(interval)
+        if _shutdown_event.is_set():
+            break
 
-        logger.info("发现 %d 个大Key", len(records))
-        output_records(records, args.output)
-    finally:
-        collector.close()
+        try:
+            start = time.time()
+            logger.info("[bigkey] 开始扫描...")
+            records = collector.collect(
+                threshold_bytes=bigkey_cfg["threshold_bytes"],
+                scan_count=bigkey_cfg["scan_count"],
+                max_keys=bigkey_cfg["max_keys"],
+            )
+            elapsed = round(time.time() - start, 2)
 
-
-def cmd_hotkey(args):
-    """热Key采集子命令"""
-    collector = HotKeyCollector(
-        host=args.host, port=args.port, password=args.password, db=args.db
-    )
-    try:
-        method = args.method
-        if method == "auto":
-            # 自动选择：优先 OBJECT FREQ（LFU策略），降级 MONITOR
-            if collector.check_lfu_policy():
-                method = "freq"
-                logger.info("检测到 LFU 策略，使用 OBJECT FREQ 方式")
+            if records:
+                logger.info("[bigkey] 发现 %d 个大Key，扫描耗时 %.1fs", len(records), elapsed)
+                _append_json(output_path, records)
             else:
-                method = "monitor"
-                logger.info("未检测到 LFU 策略，使用 MONITOR 采样方式")
+                logger.info("[bigkey] 未发现大Key，扫描耗时 %.1fs", elapsed)
+        except Exception as e:
+            logger.error("[bigkey] 扫描异常: %s", e)
 
-        if method == "freq":
-            records = collector.collect_by_object_freq(
-                top_n=args.top, scan_count=args.scan_count, max_keys=args.max_keys
-            )
+    collector.close()
+    logger.info("[bigkey] 已停止")
+
+
+def _hotkey_worker(config: dict, output_path: str):
+    """热Key周期探测线程"""
+    redis_cfg = config["redis"]
+    hotkey_cfg = config["hotkey"]
+    interval = hotkey_cfg["interval"]
+    method = hotkey_cfg["method"]
+
+    collector = HotKeyCollector(
+        host=redis_cfg["host"], port=redis_cfg["port"],
+        password=redis_cfg["password"], db=redis_cfg["db"],
+        socket_timeout=redis_cfg["socket_timeout"],
+    )
+
+    # 确定实际采集方式
+    if method == "auto":
+        if collector.check_lfu_policy():
+            method = "freq"
+            logger.info("[hotkey] 检测到 LFU 策略，使用 OBJECT FREQ")
         else:
-            records = collector.collect_by_monitor(
-                sample_seconds=args.sample_seconds, top_n=args.top
-            )
+            method = "monitor"
+            logger.info("[hotkey] 未检测到 LFU 策略，使用 MONITOR 采样")
 
-        if not records:
-            logger.info("未发现热Key")
-            return
+    logger.info("[hotkey] 启动，间隔=%ds, 方式=%s", interval, method)
 
-        logger.info("发现 %d 个热Key", len(records))
-        output_records(records, args.output)
-    finally:
-        collector.close()
+    while not _shutdown_event.is_set():
+        _shutdown_event.wait(interval)
+        if _shutdown_event.is_set():
+            break
 
+        try:
+            if method == "freq":
+                records = collector.collect_by_object_freq(top_n=hotkey_cfg["top_n"])
+            else:
+                records = collector.collect_by_monitor(
+                    sample_seconds=hotkey_cfg["sample_seconds"],
+                    top_n=hotkey_cfg["top_n"],
+                )
+
+            if records:
+                logger.info("[hotkey] 发现 %d 个热Key", len(records))
+                _append_json(output_path, records)
+            else:
+                logger.debug("[hotkey] 未发现热Key")
+        except Exception as e:
+            logger.error("[hotkey] 探测异常: %s", e)
+
+    collector.close()
+    logger.info("[hotkey] 已停止")
+
+
+# ─── 主入口 ───────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Redis Key Analyzer - Redis 诊断工具"
-    )
-    # 公共连接参数
-    parser.add_argument("--host", "-H", default="127.0.0.1", help="Redis 地址 (default: 127.0.0.1)")
-    parser.add_argument("--port", "-p", type=int, default=6379, help="Redis 端口 (default: 6379)")
-    parser.add_argument("--password", "-a", default=None, help="Redis 密码")
-    parser.add_argument("--db", "-n", type=int, default=0, help="Redis DB (default: 0)")
-    parser.add_argument("--output", "-o", default=None, help="输出文件路径（默认输出到终端）")
-
-    subparsers = parser.add_subparsers(dest="command", help="子命令")
-
-    # 慢日志子命令
-    slowlog_parser = subparsers.add_parser("slowlog", help="采集慢日志")
-    slowlog_parser.add_argument("--count", "-c", type=int, default=128, help="获取条数 (default: 128)")
-    slowlog_parser.add_argument("--reset", action="store_true", help="采集后重置慢日志")
-
-    # 大Key子命令
-    bigkey_parser = subparsers.add_parser("bigkey", help="扫描大Key")
-    bigkey_parser.add_argument("--threshold", "-t", type=int, default=DEFAULT_BIGKEY_THRESHOLD,
-                               help=f"大Key阈值(字节) (default: {DEFAULT_BIGKEY_THRESHOLD})")
-    bigkey_parser.add_argument("--scan-count", type=int, default=1000, help="每次SCAN的count (default: 1000)")
-    bigkey_parser.add_argument("--max-keys", type=int, default=0, help="最多扫描key数, 0=不限制 (default: 0)")
-
-    # 热Key子命令
-    hotkey_parser = subparsers.add_parser("hotkey", help="采集热Key")
-    hotkey_parser.add_argument("--method", "-m", choices=["auto", "monitor", "freq"], default="auto",
-                               help="采集方式: auto=自动选择, monitor=MONITOR采样, freq=OBJECT_FREQ (default: auto)")
-    hotkey_parser.add_argument("--sample-seconds", "-s", type=int, default=DEFAULT_SAMPLE_SECONDS,
-                               help=f"MONITOR采样时长(秒) (default: {DEFAULT_SAMPLE_SECONDS})")
-    hotkey_parser.add_argument("--top", "-t", type=int, default=20, help="返回前N个热Key (default: 20)")
-    hotkey_parser.add_argument("--scan-count", type=int, default=1000, help="每次SCAN的count (default: 1000)")
-    hotkey_parser.add_argument("--max-keys", type=int, default=0, help="最多扫描key数, 0=不限制 (default: 0)")
-
+    parser = argparse.ArgumentParser(description="Redis Key Analyzer - 常驻采集守护进程")
+    parser.add_argument("--config", "-c", default="config.yaml", help="配置文件路径 (default: config.yaml)")
     args = parser.parse_args()
 
-    if args.command == "slowlog":
-        cmd_slowlog(args)
-    elif args.command == "bigkey":
-        cmd_bigkey(args)
-    elif args.command == "hotkey":
-        cmd_hotkey(args)
-    else:
-        parser.print_help()
+    # 加载配置
+    try:
+        config = load_config(args.config)
+    except Exception as e:
+        logger.error("加载配置失败: %s", e)
         sys.exit(1)
+
+    redis_cfg = config["redis"]
+    output_cfg = config["output"]
+    log_dir = output_cfg["log_dir"]
+
+    logger.info("=" * 50)
+    logger.info("Redis Key Analyzer 启动")
+    logger.info("Redis: %s:%s db=%d", redis_cfg["host"], redis_cfg["port"], redis_cfg["db"])
+    logger.info("日志目录: %s", os.path.abspath(log_dir))
+    logger.info("=" * 50)
+
+    # 创建日志目录
+    os.makedirs(log_dir, exist_ok=True)
+
+    # 信号处理：优雅退出
+    def _signal_handler(sig, frame):
+        logger.info("收到退出信号，正在停止...")
+        _shutdown_event.set()
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+    # 启动采集线程
+    threads = []
+
+    if config["slowlog"]["enabled"]:
+        t = threading.Thread(
+            target=_slowlog_worker,
+            args=(config, os.path.join(log_dir, output_cfg["slowlog_file"])),
+            name="slowlog-worker", daemon=True,
+        )
+        t.start()
+        threads.append(t)
+
+    if config["bigkey"]["enabled"]:
+        t = threading.Thread(
+            target=_bigkey_worker,
+            args=(config, os.path.join(log_dir, output_cfg["bigkey_file"])),
+            name="bigkey-worker", daemon=True,
+        )
+        t.start()
+        threads.append(t)
+
+    if config["hotkey"]["enabled"]:
+        t = threading.Thread(
+            target=_hotkey_worker,
+            args=(config, os.path.join(log_dir, output_cfg["hotkey_file"])),
+            name="hotkey-worker", daemon=True,
+        )
+        t.start()
+        threads.append(t)
+
+    if not threads:
+        logger.warning("所有采集器均被禁用，退出")
+        sys.exit(0)
+
+    logger.info("已启动 %d 个采集线程", len(threads))
+
+    # 主线程等待退出信号
+    try:
+        while not _shutdown_event.is_set():
+            _shutdown_event.wait(1)
+    except KeyboardInterrupt:
+        _shutdown_event.set()
+
+    # 等待所有线程结束
+    for t in threads:
+        t.join(timeout=10)
+
+    logger.info("Redis Key Analyzer 已停止")
 
 
 if __name__ == "__main__":
