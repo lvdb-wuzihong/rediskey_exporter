@@ -23,13 +23,20 @@ class SlowLogCollector:
         )
 
     def get_slowlog_config(self) -> dict:
-        """获取当前慢日志配置"""
-        slowlog_log_slower_than = self._client.config_get("slowlog-log-slower-than")
-        slowlog_max_len = self._client.config_get("slowlog-max-len")
-        return {
-            "slowlog_log_slower_than": slowlog_log_slower_than.get("slowlog-log-slower-than", "unknown"),
-            "slowlog_max_len": slowlog_max_len.get("slowlog-max-len", "unknown"),
-        }
+        """获取当前慢日志配置（CONFIG命令不可用时返回unknown）"""
+        try:
+            slowlog_log_slower_than = self._client.config_get("slowlog-log-slower-than")
+            slowlog_max_len = self._client.config_get("slowlog-max-len")
+            return {
+                "slowlog_log_slower_than": slowlog_log_slower_than.get("slowlog-log-slower-than", "unknown"),
+                "slowlog_max_len": slowlog_max_len.get("slowlog-max-len", "unknown"),
+            }
+        except redis.exceptions.ResponseError:
+            logger.warning("CONFIG 命令不可用（云Redis可能禁用），跳过配置获取")
+            return {
+                "slowlog_log_slower_than": "unknown",
+                "slowlog_max_len": "unknown",
+            }
 
     def get_slowlog_len(self) -> int:
         """获取当前慢日志条数"""

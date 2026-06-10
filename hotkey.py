@@ -37,9 +37,13 @@ class HotKeyCollector:
 
     def check_lfu_policy(self) -> bool:
         """检查是否配置了 LFU 淘汰策略（用于 OBJECT FREQ）"""
-        config = self._client.config_get("maxmemory-policy")
-        policy = config.get("maxmemory-policy", "noeviction")
-        return "lfu" in policy.lower()
+        try:
+            config = self._client.config_get("maxmemory-policy")
+            policy = config.get("maxmemory-policy", "noeviction")
+            return "lfu" in policy.lower()
+        except redis.exceptions.ResponseError:
+            logger.warning("CONFIG 命令不可用，无法检测淘汰策略，默认不使用 OBJECT FREQ")
+            return False
 
     def collect_by_monitor(self, sample_seconds: int = DEFAULT_SAMPLE_SECONDS,
                            top_n: int = 20) -> list[dict]:
